@@ -1,0 +1,6 @@
+[submodule "lib/ABC_Library"]
+	path = lib/ABC_Library
+	url = https://github.com/TokyoTech-SSR-ACT/ABC_Library
+[submodule "lib/BaseNoid_Library"]
+	path = lib/BaseNoid_Library
+	url = https://github.com/TokyoTech-SSR-ACT/BaseNoid_Library
