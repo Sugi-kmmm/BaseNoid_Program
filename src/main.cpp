@@ -7,16 +7,17 @@
 void setup() {
     ABC::PIN_SETUP();
     ABC::Serial_Begin(115200, 115200, 1000000);
+    BaseNoid::Servo_Setup();                 // Initialize servo motors
     PS4.begin();                             // Initialize PS4 controller
     ABC::PW_Switch_LED(false, false, true);  // Blue LED on
 
     Debug_Serial.println(
-        "Press 'c' to calibration mode, or wait to start BaseNoid.");
+        "Press 's' to calibration mode, or wait to start BaseNoid.");
     unsigned long start = millis();
     while (millis() - start < 10000) {  // 10秒間だけ待つ
         if (Debug_Serial.available()) {
             char ch1 = Debug_Serial.read();
-            if (ch1 == 'c' || ch1 == 'C') {
+            if (ch1 == 's' || ch1 == 'S') {
                 while (1) {
                     Debug_Serial.println("=== Calibration Mode ===");
                     ABC::PW_Switch_LED(true, true, false);  // Yellow LED on
@@ -47,9 +48,13 @@ void setup() {
         }
         delay(100);
     }
+
+    Debug_Serial.println("Launching Servo Motor...");
+    BaseNoid::enable_servo_torque(TORQUE_ON);  // Enable servo torque
+    BaseNoid::set_initial_position();          // Set initial position of servos
+    delay(3000);
     Debug_Serial.println("Setup complete.");
     Debug_Serial.println("Welcome to BaseNoid!");
-    ABC::PW_Switch_LED(false, true, false);  // Green LED on
 }
 
 void loop() {
@@ -57,11 +62,22 @@ void loop() {
     if (ABC::Check_Battery_Voltage(1006, 154.6)) {
         ABC::PW_Switch_LED(true, false, false);  // Red LED on
         while (1) {
-            Debug_Serial.println("Battery voltage out of range!");
-            delay(1000);  // Wait for 1 second before checking again
+            Debug_Serial.println("[Fatal ERROR]:Battery voltage out of range!");
+            delay(1000);
         };
     }
 
+    if (PS4.isConnected()) {
+        ABC::PW_Switch_LED(false, true, false);  // Green LED on
+        if (abs(PS4.LStickY()) > 30) {
+            BaseNoid::Walk(PS4.LStickY(), PS4.LStickX());
+        }
+    } else {
+        BaseNoid::set_initial_position();
+        Debug_Serial.println("PS4 controller not connected.");
+        ABC::PW_Switch_LED(true, false, true);  // Purple LED on
+    }
+
     // Add your main code here
-    delay(1000);  // Delay for demonstration purposes
+    delay(10);  // Delay for demonstration purposes
 }
