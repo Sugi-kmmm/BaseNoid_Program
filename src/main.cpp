@@ -4,6 +4,10 @@
 #include "abc_function.hpp"
 #include "basenoid.hpp"
 
+static bool Now_Walking_Flagment =
+    false;                       // Flag to indicate if walking is in progress
+static uint32_t Step_Count = 0;  // Initialize step count
+
 void setup() {
     ABC::PIN_SETUP();
     ABC::Serial_Begin(115200, 115200, 1000000);
@@ -35,8 +39,14 @@ void loop() {
     if (PS4.isConnected()) {
         ABC::PW_Switch_LED(false, true, false);  // Green LED on
         if (abs(PS4.LStickY()) > 30) {
-            BaseNoid::Walk(PS4.LStickY(), PS4.LStickX());
+            if (Now_Walking_Flagment == false) {
+                Now_Walking_Flagment = true;
+                Step_Count = 0;  // Reset step count
+                BaseNoid::Get_Ready_to_Walk();
+            }
+            BaseNoid::Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
         }
+        Now_Walking_Flagment = false;
     } else {
         // BaseNoid::set_initial_position();
         Debug_Serial.println("[ERROR]:PS4 controller not connected.");
@@ -44,7 +54,7 @@ void loop() {
     }
 
     // Add your main code here
-    BaseNoid::Walk(1, 1);
+    BaseNoid::Walk_algo_test(1, 1);
     Debug_Serial.println("[INFO] END");
     while (1);
 
