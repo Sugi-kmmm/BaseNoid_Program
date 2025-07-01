@@ -54,7 +54,8 @@ void loop() {
     }
 
     // Add your main code here
-    BaseNoid::Walk_algo_test(1, 1);
+    // BaseNoid::Walk_algo_test(1, 1);
+    BaseNoid::Get_Ready_to_Walk();
     Debug_Serial.println("[INFO] END");
     while (1);
 
