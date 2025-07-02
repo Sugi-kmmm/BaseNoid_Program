@@ -20,7 +20,7 @@ void setup() {
 
     Debug_Serial.println("Launching Servo Motor...");
     BaseNoid::enable_servo_torque(TORQUE_ON);  // Enable servo torque
-    // BaseNoid::set_initial_position();// Set initial position of servos
+    BaseNoid::set_initial_position();          // Set initial position of servos
     Debug_Serial.println("Setup complete.");
     Debug_Serial.println("Welcome to BaseNoid!");
     delay(2000);
@@ -29,11 +29,14 @@ void setup() {
 void loop() {
     // Check battery voltage
     if (ABC::Check_Battery_Voltage(1006, 154.6)) {
-        ABC::PW_Switch_LED(true, false, false);  // Red LED on
-        while (1) {
+        ABC::battery_voltage_count++;
+        if (ABC::battery_voltage_count > 10) {
+            ABC::PW_Switch_LED(true, false, false);  // Red LED on
             Debug_Serial.println("[FATAL]:Battery voltage out of range!");
-            delay(1000);
-        };
+            while (1);
+        }
+    } else {
+        ABC::battery_voltage_count = 0;  // Reset battery voltage count
     }
 
     if (PS4.isConnected()) {
@@ -43,21 +46,17 @@ void loop() {
                 Now_Walking_Flagment = true;
                 Step_Count = 0;  // Reset step count
                 BaseNoid::Get_Ready_to_Walk();
+                BaseNoid::Debug_Servo_Angle();
             }
             BaseNoid::Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
+        } else {
+            Now_Walking_Flagment = false;
+            BaseNoid::set_initial_position();
         }
-        Now_Walking_Flagment = false;
     } else {
-        // BaseNoid::set_initial_position();
+        BaseNoid::set_initial_position();
         Debug_Serial.println("[ERROR]:PS4 controller not connected.");
         ABC::PW_Switch_LED(true, false, true);  // Purple LED on
     }
-
-    // Add your main code here
-    // BaseNoid::Walk_algo_test(1, 1);
-    BaseNoid::Get_Ready_to_Walk();
-    Debug_Serial.println("[INFO] END");
-    while (1);
-
     delay(10);  // Delay for demonstration purposes
 }
