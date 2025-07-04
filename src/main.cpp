@@ -11,11 +11,11 @@ static uint32_t Step_Count = 0;  // Initialize step count
 void setup() {
     ABC::PIN_SETUP();
     ABC::Serial_Begin(115200, 115200, 1000000);
-    BaseNoid::Servo_Setup();                 // Initialize servo motors
-    PS4.begin();                             // Initialize PS4 controller
-    ABC::PW_Switch_LED(false, false, true);  // Blue LED on
+    BaseNoid::Servo_Setup();  // Initialize servo motors
+    PS4.begin();              // Initialize PS4 controller
 
     BaseNoid::enable_servo_torque(TORQUE_OFF);  // Disable servo torque
+    ABC::PW_Switch_LED(false, false, true);     // Blue LED on
     BaseNoid::Setting_Mode();                   // Set servos to setting mode
 
     Debug_Serial.println("Launching Servo Motor...");
