@@ -27,13 +27,19 @@ void setup() {
 }
 
 void loop() {
+    using namespace BaseNoid;
     // Check battery voltage
     if (ABC::Check_Battery_Voltage(1006, 154.6)) {
         ABC::battery_voltage_count++;
         if (ABC::battery_voltage_count > 10) {
             ABC::PW_Switch_LED(true, false, false);  // Red LED on
             Debug_Serial.println("[FATAL]:Battery voltage out of range!");
-            while (1);
+            while (1) {
+                ABC::PW_Switch_LED(true, false, false);  // Red LED on
+                delay(1000);
+                ABC::PW_Switch_LED(false, false, false);  // All LEDs off
+                delay(1000);
+            };
         }
     } else {
         ABC::battery_voltage_count = 0;  // Reset battery voltage count
@@ -45,15 +51,16 @@ void loop() {
             if (Now_Walking_Flagment == false) {
                 Now_Walking_Flagment = true;
                 Step_Count = 0;  // Reset step count
-                BaseNoid::Get_Ready_to_Walk();
+                // Get_Ready_to_Walk();
+                Walk_algo_test(PS4.LStickX(), PS4.LStickY());
             }
-            BaseNoid::Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
+            Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
         } else {
             Now_Walking_Flagment = false;
-            BaseNoid::set_initial_position(0.2);
+            set_initial_position(0.2);
         }
     } else {
-        BaseNoid::set_initial_position(0.5);
+        set_initial_position(0.5);
         Debug_Serial.println("[ERROR]:PS4 controller not connected.");
         ABC::PW_Switch_LED(true, false, true);  // Purple LED on
     }
