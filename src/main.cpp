@@ -19,9 +19,8 @@ void setup() {
     BaseNoid::Setting_Mode();                   // Set BaseNoid to setting mode
 
     Debug_Serial.println("Launching Servo Motor...");
-    BaseNoid::fetch_servo_angle_to_real_value();  // Fetch initial servo angles
-    BaseNoid::enable_servo_torque(TORQUE_ON);     // Enable servo torque
-    BaseNoid::set_initial_position(1.0);  // Set initial position of servos
+    BaseNoid::enable_servo_torque(TORQUE_ON);  // Enable servo torque
+    BaseNoid::set_initial_position(1.0);       // Set initial position of servos
     Debug_Serial.println("Setup complete.");
     Debug_Serial.println("Welcome to BaseNoid!");
     delay(2000);
@@ -53,14 +52,18 @@ void loop() {
                 Now_Walking_Flagment = true;
                 Step_Count = 0;  // Reset step count
                 Get_Ready_to_Walk();
+                delay(3000);  // Wait for 1 second before starting to walk
             }
             Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
+            Step_Count++;  // Increment step count
         } else {
-            Now_Walking_Flagment = false;
-            set_initial_position(1);
+            if (Now_Walking_Flagment == true) {
+                Now_Walking_Flagment = false;
+                set_initial_position(0.2);
+            }
         }
     } else {
-        set_initial_position(1);
+        set_initial_position(0.1);
         Debug_Serial.println("[ERROR]:PS4 controller not connected.");
         ABC::PW_Switch_LED(true, false, true);  // Purple LED on
     }
