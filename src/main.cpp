@@ -58,6 +58,8 @@ void loop() {
             Step_Count++;  // Increment step count
         } else {
             if (Now_Walking_Flagment == true) {
+                Walk(Step_Count, 0.0, 0.0);  // Stop walking
+                delay(3000);  // Wait for 1 second before stopping
                 Now_Walking_Flagment = false;
                 set_initial_position(0.2);
             }
