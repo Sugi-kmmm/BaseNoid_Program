@@ -4,3 +4,6 @@
 [submodule "lib/BaseNoid_Library"]
 	path = lib/BaseNoid_Library
 	url = https://github.com/TokyoTech-SSR-ACT/BaseNoid_Library
+[submodule "lib/FTServo_Arduino"]
+	path = lib/FTServo_Arduino
+	url = https://github.com/ftservo/FTServo_Arduino
