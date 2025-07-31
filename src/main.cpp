@@ -3,9 +3,12 @@
 
 #include "abc_function.hpp"
 #include "basenoid.hpp"
+#include "basenoid_sample_motion.hpp"
 
 static bool Now_Walking_Flagment =
-    false;                       // Flag to indicate if walking is in progress
+    false;  // Flag to indicate if walking is in progress
+static bool Leg_flexed_state = false;  // Flag to indicate if the leg is flexed
+static bool BaseNoid_Torque_Flagment = TORQUE_OFF;
 static uint32_t Step_Count = 0;  // Initialize step count
 
 void setup() {
@@ -14,15 +17,20 @@ void setup() {
     BaseNoid::Servo_Setup();  // Initialize servo motors
     PS4.begin();              // Initialize PS4 controller
 
-    BaseNoid::enable_servo_torque(TORQUE_OFF);  // Disable servo torque
-    ABC::PW_Switch_LED(false, false, true);     // Blue LED on
-    BaseNoid::Setting_Mode();                   // Set BaseNoid to setting mode
+    BaseNoid_Torque_Flagment = TORQUE_OFF;  // Ensure torque is off initially
+    BaseNoid::enable_servo_torque(
+        BaseNoid_Torque_Flagment);           // Disable servo torque
+    ABC::PW_Switch_LED(false, false, true);  // Blue LED on
+    BaseNoid::Setting_Mode();                // Set BaseNoid to setting mode
 
     Debug_Serial.println("Launching Servo Motor...");
-    BaseNoid::enable_servo_torque(TORQUE_ON);  // Enable servo torque
-    BaseNoid::set_initial_position(1.0);       // Set initial position of servos
+    BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable servo torque
+    BaseNoid::enable_servo_torque(
+        BaseNoid_Torque_Flagment);        // Enable servo torque
+    BaseNoid::set_initial_position(1.0);  // Set initial position of servos
     Debug_Serial.println("Setup complete.");
     Debug_Serial.println("Welcome to BaseNoid!");
+    ABC::PW_Switch_LED(false, true, false);  // Green LED on
     delay(2000);
 }
 
@@ -46,22 +54,57 @@ void loop() {
     }
 
     if (PS4.isConnected()) {
-        ABC::PW_Switch_LED(false, true, false);  // Green LED on
-        if (abs(PS4.LStickY()) > 30) {
-            if (Now_Walking_Flagment == false) {
-                Now_Walking_Flagment = true;
-                Step_Count = 0;  // Reset step count
-                Get_Ready_to_Walk();
-                delay(3000);  // Wait for 1 second before starting to walk
+        if (PS4.PSButton()) {
+            if (BaseNoid_Torque_Flagment == TORQUE_ON) {
+                BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
+                Debug_Serial.println(
+                    "[INFO]:PS Button pressed, resetting BaseNoid.");
+                BaseNoid::enable_servo_torque(
+                    BaseNoid_Torque_Flagment);           // Disable servo torque
+                ABC::PW_Switch_LED(false, false, true);  // Blue LED on
+                delay(1000);  // Wait for 1 second before resetting
+            } else {
+                BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable torque
+                Debug_Serial.println(
+                    "[INFO]:PS Button pressed, resetting BaseNoid.");
+                BaseNoid::enable_servo_torque(
+                    BaseNoid_Torque_Flagment);           // Disable servo torque
+                ABC::PW_Switch_LED(false, true, false);  // Green LED on
+                delay(1000);  // Wait for 1 second before resetting
             }
-            Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
-            Step_Count++;  // Increment step count
-        } else {
-            if (Now_Walking_Flagment == true) {
-                Walk(Step_Count, 0.0, 0.0);  // Stop walking
-                delay(3000);  // Wait for 1 second before stopping
-                Now_Walking_Flagment = false;
+        }
+
+        if (PS4.Circle()) {
+            if (Leg_flexed_state == false) {
+                Leg_flexed_state = true;
+                Get_Ready_to_Walk();
+                delay(1000);  // Wait for 1 second before starting to walk
+            } else {
+                Leg_flexed_state = false;
                 set_initial_position(0.2);
+                delay(1000);  // Wait for 1 second before stopping
+            }
+        }
+
+        if (Leg_flexed_state == true) {
+            if (abs(PS4.LStickY()) > 30) {
+                if (Now_Walking_Flagment == false) {
+                    Now_Walking_Flagment = true;
+                    Step_Count = 0;  // Reset step count
+                }
+                Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
+                Step_Count++;  // Increment step count
+            } else {
+                if (Now_Walking_Flagment == true) {
+                    Walk(Step_Count, 0.0, 0.0);  // Stop walking
+                    delay(1000);  // Wait for 1 second before stopping
+                    Now_Walking_Flagment = false;
+                }
+            }
+
+            if (PS4.Cross()) {
+                // If Cross button is pressed, perform a punch action
+                BaseNoid_Sample_Motion::punch();
             }
         }
     } else {
