@@ -21,7 +21,24 @@ void setup() {
     BaseNoid::enable_servo_torque(
         BaseNoid_Torque_Flagment);           // Disable servo torque
     ABC::PW_Switch_LED(false, false, true);  // Blue LED on
-    BaseNoid::Setting_Mode();                // Set BaseNoid to setting mode
+
+    Debug_Serial.println(
+        "Press 's' to enter configuration mode, or wait 3 s to start BaseNoid. "
+        "You can also start BaseNoid by pressing 'c'.");
+    uint32_t start = millis();
+    while (millis() - start < 3000) {  // 3 secだけ待つ
+        if (Debug_Serial.available()) {
+            char ch1 = Debug_Serial.read();
+            if (ch1 == 's' || ch1 == 'S') {
+                BaseNoid::Configuration_Mode();  // Set BaseNoid to setting mode
+            } else if (ch1 == 'c' || ch1 == 'C') {
+                break;  // Exit setting mode and start BaseNoid
+            } else {
+                Debug_Serial.println("Invalid selection. Please try again.");
+            }
+        }
+        delay(100);
+    }
 
     Debug_Serial.println("Launching Servo Motor...");
     BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable servo torque
@@ -54,11 +71,18 @@ void loop() {
     }
 
     if (PS4.isConnected()) {
+        if (BaseNoid_Torque_Flagment == TORQUE_OFF) {
+            ABC::PW_Switch_LED(false, false, true);  // Blue LED on
+        } else {
+            ABC::PW_Switch_LED(false, true, false);  // Green LED on
+        }
+
         if (PS4.PSButton()) {
             if (BaseNoid_Torque_Flagment == TORQUE_ON) {
                 BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
                 Debug_Serial.println(
-                    "[INFO]:PS Button pressed, resetting BaseNoid.");
+                    "[INFO]:PS Button pressed, turned off torque on "
+                    "BaseNoid.");
                 BaseNoid::enable_servo_torque(
                     BaseNoid_Torque_Flagment);           // Disable servo torque
                 ABC::PW_Switch_LED(false, false, true);  // Blue LED on
@@ -66,12 +90,18 @@ void loop() {
             } else {
                 BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable torque
                 Debug_Serial.println(
-                    "[INFO]:PS Button pressed, resetting BaseNoid.");
+                    "[INFO]:PS Button pressed, turned on torque on "
+                    "BaseNoid.");
                 BaseNoid::enable_servo_torque(
                     BaseNoid_Torque_Flagment);           // Disable servo torque
                 ABC::PW_Switch_LED(false, true, false);  // Green LED on
+                set_initial_position(0.2);
                 delay(1000);  // Wait for 1 second before resetting
             }
+        }
+
+        if (BaseNoid_Torque_Flagment == TORQUE_OFF && PS4.Options()) {
+            BaseNoid::Configuration_Mode();  // Set BaseNoid to setting mode
         }
 
         if (PS4.Circle()) {
