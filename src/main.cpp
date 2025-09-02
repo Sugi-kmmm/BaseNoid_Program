@@ -81,8 +81,7 @@ void loop() {
             if (BaseNoid_Torque_Flagment == TORQUE_ON) {
                 BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
                 Debug_Serial.println(
-                    "[INFO]:PS Button pressed, turned off torque on "
-                    "BaseNoid.");
+                    "[INFO]:PS Button pressed, turned off torque on BaseNoid.");
                 BaseNoid::enable_servo_torque(
                     BaseNoid_Torque_Flagment);           // Disable servo torque
                 ABC::PW_Switch_LED(false, false, true);  // Blue LED on
@@ -90,8 +89,7 @@ void loop() {
             } else {
                 BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable torque
                 Debug_Serial.println(
-                    "[INFO]:PS Button pressed, turned on torque on "
-                    "BaseNoid.");
+                    "[INFO]:PS Button pressed, turned on torque on BaseNoid.");
                 BaseNoid::enable_servo_torque(
                     BaseNoid_Torque_Flagment);           // Disable servo torque
                 ABC::PW_Switch_LED(false, true, false);  // Green LED on
@@ -132,9 +130,16 @@ void loop() {
                 }
             }
 
-            if (PS4.Cross()) {
-                // If Cross button is pressed, perform a punch action
+            if (PS4.Triangle()) {
+                Debug_Serial.println("[INFO]:Triangle button pressed.");
+                // If Triangle button is pressed, perform a punch action
                 BaseNoid_Sample_Motion::punch();
+            }
+
+            if (PS4.Down()) {
+                Debug_Serial.println("[INFO]:Down button pressed.");
+                // If Down button is pressed, perform a sit down action
+                BaseNoid_Sample_Motion::sit_down();
             }
         }
     } else {
