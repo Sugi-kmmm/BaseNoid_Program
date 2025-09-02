@@ -122,61 +122,17 @@ void setup() {
 }
 
 void loop() {
-    // if (PS4.isConnected()) {
-    //     if (PS4.PSButton()) {  // 緊停処理
-    //         Servo_Torque_State = TORQUE_OFF;
-    //         enable_servo_torque(Servo_Torque_State);
-    //         Debug_Serial.println("Fatal:emergency stop activated.");
-    //         PS4.setLed(255, 0, 0);
-    //         PS4.sendToController();
-    //         while (1);
-    //     }
-    //     // ここにどんどん書いてく．
-    //     if (PS4.Circle()) {
-    //         shake_R_hands();
-    //     }
-    //     if (PS4.Square()) {
-    //         shake_L_hands();
-    //     }
-    //     if (PS4.Triangle()) {
-    //         punch();
-    //     }
-    //     if (PS4.Cross()) {
-    //         banzai();
-    //     }
-    //     if (PS4.L1()) {
-    //         tukkomi();
-    //     }
-    //     if (PS4.Up()) {
-    //         if (walk_mode == false) {
-    //             walk_mode = true;
-    //             walk_ready();
-    //         } else {
-    //             walk_straight_motion();
-    //         }
-    //     } else {
-    //         if (walk_mode == true) {
-    //             walk_mode = false;
-    //             walk_finish();
-    //         }
-    //         initial_posture();
-    //     }
-
-    // } else {
-    //     initial_posture();
-    //     randNum = random(4);
-    //     if (randNum == 0) {
-    //         shake_L_hands();
-    //     } else if (randNum == 1) {
-    //         shake_R_hands();
-    //     } else if (randNum == 2) {
-    //         punch();
-    //     } else {
-    //         banzai();
-    //     }
-    // }
-    // delay(100);
     initial_posture();
+    randNum = random(4);
+    if (randNum == 0) {
+        shake_L_hands();
+    } else if (randNum == 1) {
+        shake_R_hands();
+    } else if (randNum == 2) {
+        punch();
+    } else {
+        banzai();
+    }
 }
 
 bool check_range(uint8_t Servo_ID, int16_t Position) {
