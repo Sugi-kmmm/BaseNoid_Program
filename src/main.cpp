@@ -1,7 +1,4 @@
 #include <Arduino.h>
-#define CUSTOM_SETTINGS
-#define INCLUDE_GAMEPAD_MODULE
-#include <DabbleESP32.h>
 
 #include "abc_function.hpp"
 #include "basenoid.hpp"
@@ -16,8 +13,8 @@ static uint32_t Step_Count = 0;  // Initialize step count
 void setup() {
     ABC::PIN_SETUP();
     ABC::Serial_Begin(115200, 115200, 1000000);
-    BaseNoid::Servo_Setup();   // Initialize servo motors
-    Dabble.begin("BaseNoid");  // Initialize PS4 controller
+    BaseNoid::Servo_Setup();  // Initialize servo motors
+    // PS3.begin();              // Initialize PS4 controller
 
     BaseNoid_Torque_Flagment = TORQUE_OFF;  // Ensure torque is off initially
     BaseNoid::enable_servo_torque(
@@ -55,6 +52,7 @@ void setup() {
 
 void loop() {
     using namespace BaseNoid;
+    char ch1 = Debug_Serial.read();
     // Check battery voltage
     if (ABC::Check_Battery_Voltage(1006, 154.6)) {
         ABC::battery_voltage_count++;
@@ -72,14 +70,13 @@ void loop() {
         ABC::battery_voltage_count = 0;  // Reset battery voltage count
     }
 
-    Dabble.processInput();  // Refresh data from PS4 controller
     if (BaseNoid_Torque_Flagment == TORQUE_OFF) {
         ABC::PW_Switch_LED(false, false, true);  // Blue LED on
     } else {
         ABC::PW_Switch_LED(false, true, false);  // Green LED on
     }
 
-    if (GamePad.isStartPressed()) {
+    if (ch1 == 'q') {
         if (BaseNoid_Torque_Flagment == TORQUE_ON) {
             BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
             Debug_Serial.println(
@@ -100,11 +97,11 @@ void loop() {
         }
     }
 
-    if (BaseNoid_Torque_Flagment == TORQUE_OFF && PS4.Options()) {
+    if (BaseNoid_Torque_Flagment == TORQUE_OFF && ch1 == 'p') {
         BaseNoid::Configuration_Mode();  // Set BaseNoid to setting mode
     }
 
-    if (PS4.Circle()) {
+    if (ch1 == 'e') {
         if (Leg_flexed_state == false) {
             Leg_flexed_state = true;
             Get_Ready_to_Walk();
@@ -117,13 +114,15 @@ void loop() {
     }
 
     if (Leg_flexed_state == true) {
-        if (abs(PS4.LStickY()) > 30) {
-            if (Now_Walking_Flagment == false) {
-                Now_Walking_Flagment = true;
-                Step_Count = 0;  // Reset step count
+        if (ch1 == 'w') {
+            for (int i = 0; i < 10; i++) {
+                if (Now_Walking_Flagment == false) {
+                    Now_Walking_Flagment = true;
+                    Step_Count = 0;  // Reset step count
+                }
+                Walk(Step_Count, 128, 0);
+                Step_Count++;  // Increment step count
             }
-            Walk(Step_Count, PS4.LStickY(), PS4.LStickX());
-            Step_Count++;  // Increment step count
         } else {
             if (Now_Walking_Flagment == true) {
                 Walk(Step_Count, 0.0, 0.0);  // Stop walking
@@ -132,22 +131,18 @@ void loop() {
             }
         }
 
-        if (PS4.Triangle()) {
+        if (ch1 == 'a') {
             Debug_Serial.println("[INFO]:Triangle button pressed.");
             // If Triangle button is pressed, perform a punch action
             BaseNoid_Sample_Motion::punch();
         }
 
-        if (PS4.Down()) {
+        if (ch1 == 'b') {
             Debug_Serial.println("[INFO]:Down button pressed.");
             // If Down button is pressed, perform a sit down action
             BaseNoid_Sample_Motion::sit_down();
         }
     }
-
-    set_initial_position(0.1);
-    Debug_Serial.println("[ERROR]:PS4 controller not connected.");
-    ABC::PW_Switch_LED(true, false, true);  // Purple LED on
-
-    delay(10);  // Delay for demonstration purposes
+    ch1 = 0;
+    Debug_Serial.printf("ch1: %c\n", ch1);
 }
