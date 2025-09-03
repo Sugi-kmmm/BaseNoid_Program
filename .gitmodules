@@ -7,6 +7,3 @@
 [submodule "lib/FTServo_Arduino"]
 	path = lib/FTServo_Arduino
 	url = https://github.com/ftservo/FTServo_Arduino
-[submodule "lib/bluepad32"]
-	path = lib/bluepad32
-	url = https://github.com/ricardoquesada/bluepad32.git
