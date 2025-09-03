@@ -172,5 +172,10 @@ void BaseNoid_Process(ControllerPtr ctl) {
             // If Down button is pressed, perform a sit down action
             BaseNoid_Sample_Motion::sit_down();
         }
+        if (ctl->dpad() & DPAD_UP) {
+            Debug_Serial.println("[INFO]:Up button pressed.");
+            // If Up button is pressed, perform a wake up action
+            BaseNoid_Sample_Motion::stand_up();
+        }
     }
 }
