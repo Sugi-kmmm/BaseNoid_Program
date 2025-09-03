@@ -10,6 +10,8 @@ static bool Leg_flexed_state = false;  // Flag to indicate if the leg is flexed
 static bool BaseNoid_Torque_Flagment = TORQUE_OFF;
 static uint32_t Step_Count = 0;  // Initialize step count
 
+void BaseNoid_Process(ControllerPtr ctl);
+
 void setup() {
     using namespace ABC;
     using namespace BaseNoid;
@@ -55,7 +57,10 @@ void setup() {
 void loop() {
     using namespace ABC;
     using namespace BaseNoid;
-    char ch1 = Debug_Serial.read();
+
+    // Check for input from Controller
+    bool dataUpdated = BP32.update();
+
     // Check battery voltage
     if (Check_Battery_Voltage(1006, 154.6)) {
         battery_voltage_count++;
@@ -79,7 +84,29 @@ void loop() {
         PW_Switch_LED(false, true, false);  // Green LED on
     }
 
-    if (ch1 == 'q') {
+    if (dataUpdated) {
+        for (auto myController : myControllers) {
+            if (myController && myController->isConnected() &&
+                myController->hasData()) {
+                if (myController->isGamepad()) {
+                    BaseNoid_Process(myController);
+                } else {
+                    Debug_Serial.println("[WARNIG]:Unsupported controller");
+                    PW_Switch_LED(true, false, true);  // Purple LED on
+                    delay(1000);
+                }
+            }
+        }
+    }
+
+    vTaskDelay(1);
+}
+
+void BaseNoid_Process(ControllerPtr ctl) {
+    using namespace ABC;
+    using namespace BaseNoid;
+
+    if (ctl->miscButtons() & MISC_BUTTON_SYSTEM) {
         if (BaseNoid_Torque_Flagment == TORQUE_ON) {
             BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
             Debug_Serial.println(
@@ -100,11 +127,13 @@ void loop() {
         }
     }
 
-    if (BaseNoid_Torque_Flagment == TORQUE_OFF && ch1 == 'p') {
+    if (BaseNoid_Torque_Flagment == TORQUE_OFF &&
+        ctl->miscButtons() & MISC_BUTTON_START) {
         Configuration_Mode();  // Set BaseNoid to setting mode
     }
 
-    if (ch1 == 'e') {
+    // Press Circle and basenoid get ready for walking
+    if (ctl->buttons() & BUTTON_B) {
         if (Leg_flexed_state == false) {
             Leg_flexed_state = true;
             Get_Ready_to_Walk();
@@ -117,15 +146,13 @@ void loop() {
     }
 
     if (Leg_flexed_state == true) {
-        if (ch1 == 'w') {
-            for (int i = 0; i < 10; i++) {
-                if (Now_Walking_Flagment == false) {
-                    Now_Walking_Flagment = true;
-                    Step_Count = 0;  // Reset step count
-                }
-                Walk(Step_Count, 128, 0);
-                Step_Count++;  // Increment step count
+        if (abs(ctl->axisX()) > 64) {
+            if (Now_Walking_Flagment == false) {
+                Now_Walking_Flagment = true;
+                Step_Count = 0;  // Reset step count
             }
+            Walk(Step_Count, ctl->axisX(), 0);
+            Step_Count++;  // Increment step count
         } else {
             if (Now_Walking_Flagment == true) {
                 Walk(Step_Count, 0.0, 0.0);  // Stop walking
@@ -134,18 +161,16 @@ void loop() {
             }
         }
 
-        if (ch1 == 'a') {
+        if (ctl->buttons() & BUTTON_Y) {
             Debug_Serial.println("[INFO]:Triangle button pressed.");
             // If Triangle button is pressed, perform a punch action
             BaseNoid_Sample_Motion::punch();
         }
 
-        if (ch1 == 'b') {
+        if (ctl->dpad() & DPAD_DOWN) {
             Debug_Serial.println("[INFO]:Down button pressed.");
             // If Down button is pressed, perform a sit down action
             BaseNoid_Sample_Motion::sit_down();
         }
     }
-    ch1 = 0;
-    Debug_Serial.printf("ch1: %c\n", ch1);
 }
