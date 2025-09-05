@@ -177,5 +177,8 @@ void BaseNoid_Process(ControllerPtr ctl) {
             // If Up button is pressed, perform a wake up action
             BaseNoid_Sample_Motion::stand_up();
         }
+        if (ctl->buttons() & BUTTON_X) {
+            BaseNoid_Sample_Motion::kataashidachi();
+        }
     }
 }
