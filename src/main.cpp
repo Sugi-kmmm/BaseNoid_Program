@@ -10,6 +10,7 @@ static bool Leg_flexed_state = false;  // Flag to indicate if the leg is flexed
 static bool BaseNoid_Torque_Flagment = TORQUE_OFF;
 static uint32_t Step_Count = 0;  // Initialize step count
 static int16_t Walk_Command_x = 0;  // Forward(+)/backward(-) command
+static int16_t Walk_Command_turn = 0;  // Turn left(+)/right(-) command
 
 void BaseNoid_Process(ControllerPtr ctl);
 
@@ -95,6 +96,7 @@ void loop() {
     }
     if (!controller_connected) {
         Walk_Command_x = 0;
+        Walk_Command_turn = 0;
     }
 
     if (dataUpdated) {
@@ -115,12 +117,12 @@ void loop() {
     // Walking : called every loop without waiting for controller updates,
     // so that the LIPM trajectory is continuous between steps
     if (Leg_flexed_state == true && BaseNoid_Torque_Flagment == TORQUE_ON) {
-        if (Walk_Command_x != 0) {
+        if (Walk_Command_x != 0 || Walk_Command_turn != 0) {
             if (Now_Walking_Flagment == false) {
                 Now_Walking_Flagment = true;
                 Step_Count = 0;  // Reset step count
             }
-            Walk(Step_Count, Walk_Command_x, 0);
+            Walk(Step_Count, Walk_Command_x, 0, Walk_Command_turn);
             Step_Count++;  // Increment step count
         } else if (Now_Walking_Flagment == true) {
             Walk_Stop(Step_Count);  // Stop walking
@@ -139,6 +141,7 @@ void BaseNoid_Process(ControllerPtr ctl) {
         if (BaseNoid_Torque_Flagment == TORQUE_ON) {
             BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
             Walk_Command_x = 0;
+            Walk_Command_turn = 0;
             Now_Walking_Flagment = false;
             apply_servo_gain(false);  // Gains for non-walking mode
             Debug_Serial.println(
@@ -167,8 +170,11 @@ void BaseNoid_Process(ControllerPtr ctl) {
     if (Leg_flexed_state == true) {
         // Left stick up : forward, down : backward
         Walk_Command_x = (abs(ctl->axisY()) > 64) ? -ctl->axisY() : 0;
+        // Left stick left : turn left, right : turn right
+        Walk_Command_turn = (abs(ctl->axisX()) > 64) ? -ctl->axisX() : 0;
     } else {
         Walk_Command_x = 0;
+        Walk_Command_turn = 0;
     }
     if (Now_Walking_Flagment == true) {
         return;  // Ignore other buttons while walking
