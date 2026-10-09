@@ -9,6 +9,7 @@ static bool Now_Walking_Flagment =
 static bool Leg_flexed_state = false;  // Flag to indicate if the leg is flexed
 static bool BaseNoid_Torque_Flagment = TORQUE_OFF;
 static uint32_t Step_Count = 0;  // Initialize step count
+static int16_t Walk_Command_x = 0;  // Forward(+)/backward(-) command
 
 void BaseNoid_Process(ControllerPtr ctl);
 
@@ -44,6 +45,7 @@ void setup() {
         delay(100);
     }
 
+    apply_servo_gain(false, true);  // Set servo PID gains before enabling torque
     Debug_Serial.println("Launching Servo Motor...");
     BaseNoid_Torque_Flagment = TORQUE_ON;           // Enable servo torque
     enable_servo_torque(BaseNoid_Torque_Flagment);  // Enable servo torque
@@ -84,6 +86,17 @@ void loop() {
         PW_Switch_LED(false, true, false);  // Green LED on
     }
 
+    // Stop walking if no controller is connected
+    bool controller_connected = false;
+    for (auto myController : myControllers) {
+        if (myController && myController->isConnected()) {
+            controller_connected = true;
+        }
+    }
+    if (!controller_connected) {
+        Walk_Command_x = 0;
+    }
+
     if (dataUpdated) {
         for (auto myController : myControllers) {
             if (myController && myController->isConnected() &&
@@ -99,6 +112,22 @@ void loop() {
         }
     }
 
+    // Walking : called every loop without waiting for controller updates,
+    // so that the LIPM trajectory is continuous between steps
+    if (Leg_flexed_state == true && BaseNoid_Torque_Flagment == TORQUE_ON) {
+        if (Walk_Command_x != 0) {
+            if (Now_Walking_Flagment == false) {
+                Now_Walking_Flagment = true;
+                Step_Count = 0;  // Reset step count
+            }
+            Walk(Step_Count, Walk_Command_x, 0);
+            Step_Count++;  // Increment step count
+        } else if (Now_Walking_Flagment == true) {
+            Walk_Stop(Step_Count);  // Stop walking
+            Now_Walking_Flagment = false;
+        }
+    }
+
     delay(1);
 }
 
@@ -109,6 +138,9 @@ void BaseNoid_Process(ControllerPtr ctl) {
     if (ctl->miscButtons() & MISC_BUTTON_SYSTEM) {
         if (BaseNoid_Torque_Flagment == TORQUE_ON) {
             BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
+            Walk_Command_x = 0;
+            Now_Walking_Flagment = false;
+            apply_servo_gain(false);  // Gains for non-walking mode
             Debug_Serial.println(
                 "[INFO]:PS Button pressed, turned off torque on BaseNoid.");
             enable_servo_torque(
@@ -132,6 +164,16 @@ void BaseNoid_Process(ControllerPtr ctl) {
         Configuration_Mode();  // Set BaseNoid to setting mode
     }
 
+    if (Leg_flexed_state == true) {
+        // Left stick up : forward, down : backward
+        Walk_Command_x = (abs(ctl->axisY()) > 64) ? -ctl->axisY() : 0;
+    } else {
+        Walk_Command_x = 0;
+    }
+    if (Now_Walking_Flagment == true) {
+        return;  // Ignore other buttons while walking
+    }
+
     // Press Circle and basenoid get ready for walking
     if (ctl->buttons() & BUTTON_B) {
         if (Leg_flexed_state == false) {
@@ -146,21 +188,6 @@ void BaseNoid_Process(ControllerPtr ctl) {
     }
 
     if (Leg_flexed_state == true) {
-        if (abs(ctl->axisX()) > 64) {
-            if (Now_Walking_Flagment == false) {
-                Now_Walking_Flagment = true;
-                Step_Count = 0;  // Reset step count
-            }
-            Walk(Step_Count, ctl->axisX(), 0);
-            Step_Count++;  // Increment step count
-        } else {
-            if (Now_Walking_Flagment == true) {
-                Walk(Step_Count, 0.0, 0.0);  // Stop walking
-                delay(1000);  // Wait for 1 second before stopping
-                Now_Walking_Flagment = false;
-            }
-        }
-
         if (ctl->buttons() & BUTTON_Y) {
             Debug_Serial.println("[INFO]:Triangle button pressed.");
             // If Triangle button is pressed, perform a punch action
@@ -179,6 +206,11 @@ void BaseNoid_Process(ControllerPtr ctl) {
         }
         if (ctl->buttons() & BUTTON_X) {
             BaseNoid_Sample_Motion::kataashidachi();
+        }
+        if (ctl->buttons() & BUTTON_A) {
+            Debug_Serial.println("[INFO]:Cross button pressed.");
+            // If Cross button is pressed, measure the servo delay
+            Measure_Control_Delay();
         }
     }
 }
