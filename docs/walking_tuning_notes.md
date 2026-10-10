@@ -84,7 +84,7 @@
 - ○ で歩行準備の姿勢にしてから × を押すと、ゲインスイープが走る（約25秒）。結果はシリアル（115200bps）に CSV で出力される
 - シリアルの記録は DTR と RTS を False にしてから開く。そうしないと ESP32 がリセットする
 - 起動時に、書き込み前と書き込み後のゲインと不感帯を表示する
-- ビルドで `xtensa-esp32-elf-g++: error: CreateProcess: No such file or directory` が出る PC がある。コンパイルのコマンドラインが Windows の上限（約32k文字）を超えるため。`subst P: %USERPROFILE%\.platformio` で短いパスを作り、`PLATFORMIO_CORE_DIR=P:\` にしてビルドすると通る
+- ビルドで `xtensa-esp32-elf-g++: error: CreateProcess: No such file or directory` が出る PC がある。コンパイルのコマンドラインが Windows の上限（約32k文字）を超えるため。標準の `framework-arduinoespressif32` がすでに入っている PC では、Bluepad32 版が `~/.platformio/packages/framework-arduinoespressif32@src-（長いハッシュ）` という名前で入り、インクルードパスが長くなる。このフォルダを `framework-arduinoespressif32@bp32` のような短い名前に変えると直る（PlatformIO は中の `.piopm` でパッケージを見分けるので、再ダウンロードは起きない）
 
 ## 6. PC からの PID ゲイン調整（configuration mode）
 
