@@ -1,1058 +1,359 @@
 #include <Arduino.h>
 
-#include <abc_pin_assign.hpp>
+#include "abc_function.hpp"
+#include "basenoid.hpp"
+#include "basenoid_sample_motion.hpp"
+
+static bool Now_Walking_Flagment =
+    false;  // Flag to indicate if walking is in progress
+static bool Leg_flexed_state = false;  // Flag to indicate if the leg is flexed
+static bool BaseNoid_Torque_Flagment = TORQUE_OFF;
+static uint32_t Step_Count = 0;        // Initialize step count
+static int16_t Walk_Command_x = 0;     // Forward(+)/backward(-) command
+static int16_t Walk_Command_turn = 0;  // Turn left(+)/right(-) command
+static volatile bool Random_Motion_Flagment =
+    false;                                // Playing motions at random
+static bool Square_Button_State = false;  // Square button is held down
+
+void BaseNoid_Process(ControllerPtr ctl);
+
+// Returns true only at the moment the Square button is pressed
+bool Square_Button_Pressed(void) {
+    using namespace ABC;
+    bool pressed = false;
+    for (auto myController : myControllers) {
+        if (myController && myController->isConnected() &&
+            myController->isGamepad() && (myController->buttons() & BUTTON_X)) {
+            pressed = true;
+        }
+    }
+    const bool pressed_now = pressed && !Square_Button_State;
+    Square_Button_State = pressed;
+    return pressed_now;
+}
+
+// Watcher task (works like an interrupt) : while a random motion is being
+// played, the main task is blocked in the motion, so this task watches the
+// controller instead. When the Square button is pressed (or the controller
+// is disconnected), it wakes up the main task to stop the motion immediately.
+static SemaphoreHandle_t Controller_Mutex = nullptr;
+static volatile bool Random_Motion_Playing = false;
+
+void Random_Motion_Watcher(void*) {
+    using namespace ABC;
+    for (;;) {
+        xSemaphoreTake(Controller_Mutex, portMAX_DELAY);
+        if (Random_Motion_Playing) {
+            BP32.update();
+            bool controller_connected = false;
+            for (auto myController : myControllers) {
+                if (myController && myController->isConnected()) {
+                    controller_connected = true;
+                }
+            }
+            if (Square_Button_Pressed() || !controller_connected) {
+                Random_Motion_Flagment = false;
+                Random_Motion_Playing = false;
+                BaseNoid_Sample_Motion::request_motion_stop();
+            }
+        }
+        xSemaphoreGive(Controller_Mutex);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
 
 void setup() {
-    // Initialize serial communication for debugging
-    Serial.begin(115200);
-    while (!Serial) {
-        ;  // Wait for serial port to connect. Needed for native USB port only
+    using namespace ABC;
+    using namespace BaseNoid;
+    PIN_SETUP();
+    Serial_Begin(115200, 115200, 1000000);
+    Servo_Setup();  // Initialize servo motors
+
+    // Setup the Bluepad32
+    BluePad32_Controller_Setup(false);  // Enable touchpad and mouse support
+    // Higher priority than loop() (priority 1), same core as loop()
+    Controller_Mutex = xSemaphoreCreateMutex();
+    xTaskCreatePinnedToCore(Random_Motion_Watcher, "motion_watcher", 4096,
+                            nullptr, 2, nullptr, ARDUINO_RUNNING_CORE);
+
+    BaseNoid_Torque_Flagment = TORQUE_OFF;  // Ensure torque is off initially
+    enable_servo_torque(BaseNoid_Torque_Flagment);  // Disable servo torque
+    PW_Switch_LED(false, false, true);              // Blue LED on
+
+    Debug_Serial.println(
+        "Press 's' to enter configuration mode, or wait 3 s to start BaseNoid. "
+        "You can also start BaseNoid by pressing 'c'.");
+    uint32_t start = millis();
+    while (millis() - start < 3000) {  // 3 secだけ待つ
+        if (Debug_Serial.available()) {
+            char ch1 = Debug_Serial.read();
+            if (ch1 == 's' || ch1 == 'S') {
+                Configuration_Mode();  // Set BaseNoid to setting mode
+            } else if (ch1 == 'c' || ch1 == 'C') {
+                break;  // Exit setting mode and start BaseNoid
+            } else {
+                Debug_Serial.println("Invalid selection. Please try again.");
+            }
+        }
+        delay(100);
     }
-    ledcSetup(0, 12800, 8);  // Set up LEDC channel 0 with a frequency of 5000
-                             // Hz and 8-bit resolution
-    ledcAttachPin(SPEAKER_PIN, 0);  // Attach the built-in LED to channel 0
-    Serial.println("Setup complete.");
+
+    apply_servo_gain(false,
+                     true);  // Set servo PID gains before enabling torque
+    Debug_Serial.println("Launching Servo Motor...");
+    BaseNoid_Torque_Flagment = TORQUE_ON;           // Enable servo torque
+    enable_servo_torque(BaseNoid_Torque_Flagment);  // Enable servo torque
+    set_initial_position(1.0);  // Set initial position of servos
+    Debug_Serial.println("Setup complete.");
+    Debug_Serial.println("Welcome to BaseNoid!");
+    PW_Switch_LED(false, true, false);  // Green LED on
+    delay(2000);
 }
 
 void loop() {
-    // Main loop does nothing in this example
-    ledcWrite(0, 128);  // Set the duty cycle to 50% (128 out of 255)
-    delay(1000);        // Wait for a second
-    ledcWrite(0, 0);    // Turn off the LED
-    delay(1000);        // Wait for a second
-    ledcWrite(0, 255);  // Turn on the LED at full brightness
-    delay(1000);        // Wait for a second before the next loop iteration
-    Serial.println("Looping...");
+    using namespace ABC;
+    using namespace BaseNoid;
+
+    // Check for input from Controller
+    bool dataUpdated = BP32.update();
+
+    // Check battery voltage
+    if (Check_Battery_Voltage(1006, 154.6)) {
+        battery_voltage_count++;
+        if (battery_voltage_count > 10) {
+            PW_Switch_LED(true, false, false);  // Red LED on
+            Debug_Serial.println("[FATAL]:Battery voltage out of range!");
+            while (1) {
+                PW_Switch_LED(true, false, false);  // Red LED on
+                delay(1000);
+                PW_Switch_LED(false, false, false);  // All LEDs off
+                delay(1000);
+            };
+        }
+    } else {
+        battery_voltage_count = 0;  // Reset battery voltage count
+    }
+
+    if (BaseNoid_Torque_Flagment == TORQUE_OFF) {
+        PW_Switch_LED(false, false, true);  // Blue LED on
+    } else {
+        PW_Switch_LED(false, true, false);  // Green LED on
+    }
+
+    // Stop walking if no controller is connected
+    bool controller_connected = false;
+    for (auto myController : myControllers) {
+        if (myController && myController->isConnected()) {
+            controller_connected = true;
+        }
+    }
+    if (!controller_connected) {
+        Walk_Command_x = 0;
+        Walk_Command_turn = 0;
+    }
+
+    if (dataUpdated) {
+        for (auto myController : myControllers) {
+            if (myController && myController->isConnected() &&
+                myController->hasData()) {
+                if (myController->isGamepad()) {
+                    BaseNoid_Process(myController);
+                } else {
+                    Debug_Serial.println("[WARNIG]:Unsupported controller");
+                    PW_Switch_LED(true, false, true);  // Purple LED on
+                    delay(1000);
+                }
+            }
+        }
+    }
+
+    // Walking : called every loop without waiting for controller updates,
+    // so that the LIPM trajectory is continuous between steps
+    if (Leg_flexed_state == true && BaseNoid_Torque_Flagment == TORQUE_ON) {
+        if (Walk_Command_x != 0 || Walk_Command_turn != 0) {
+            if (Now_Walking_Flagment == false) {
+                Now_Walking_Flagment = true;
+                Step_Count = 0;  // Reset step count
+            }
+            Walk(Step_Count, Walk_Command_x, 0, Walk_Command_turn);
+            Step_Count++;  // Increment step count
+        } else if (Now_Walking_Flagment == true) {
+            Walk_Stop(Step_Count);  // Stop walking
+            Now_Walking_Flagment = false;
+        }
+    }
+
+    // Random motion : Square button starts / stops it (only while standing)
+    const bool random_motion_available =
+        Leg_flexed_state == false && BaseNoid_Torque_Flagment == TORQUE_ON &&
+        controller_connected;
+    // true : the random motions ended without being stopped halfway, so the
+    // waist is still turned
+    bool random_motion_ended = false;
+    if (Square_Button_Pressed() && random_motion_available) {
+        Random_Motion_Flagment = !Random_Motion_Flagment;
+        random_motion_ended = !Random_Motion_Flagment;
+        Debug_Serial.println(Random_Motion_Flagment
+                                 ? "[INFO]:Random motion started."
+                                 : "[INFO]:Random motion stopped.");
+    }
+    if (!random_motion_available && Random_Motion_Flagment) {
+        Random_Motion_Flagment = false;
+        random_motion_ended = true;
+    }
+    if (random_motion_ended && BaseNoid_Torque_Flagment == TORQUE_ON) {
+        BaseNoid_Sample_Motion::face_front();
+    }
+    if (Random_Motion_Flagment) {
+        // The watcher task stops the motion immediately when the Square
+        // button is pressed again
+        xSemaphoreTake(Controller_Mutex, portMAX_DELAY);
+        Random_Motion_Playing = true;
+        xSemaphoreGive(Controller_Mutex);
+
+        const bool finished = BaseNoid_Sample_Motion::play_random_motion();
+
+        xSemaphoreTake(Controller_Mutex, portMAX_DELAY);
+        Random_Motion_Playing = false;
+        xSemaphoreGive(Controller_Mutex);
+        if (!finished) {
+            Debug_Serial.println("[INFO]:Random motion stopped.");
+        } else if (!Random_Motion_Flagment) {
+            // Stop requested just after the motion finished
+            Debug_Serial.println("[INFO]:Random motion stopped.");
+            BaseNoid_Sample_Motion::face_front();
+        }
+    }
+
+    delay(1);
 }
 
-// #include <Arduino.h>
-// #include <HardwareSerial.h>
-// #include <PS4Controller.h>
-// #include <SCServo.h>
-
-// #define RDATA_LENGTH 6
-// #define DEGREE_OF_FREEDOM 19
-// #define TORQUE_ON 1
-// #define TORQUE_OFF 0
-
-// SMS_STS STS3215;
-
-// HardwareSerial Debug_Serial(0);  // Use USB
-// HardwareSerial Servo_Serial(2);  // Use IO16, & IO17
-
-// struct Servo {
-//     uint8_t ID;
-//     int16_t angle;
-//     uint16_t speed;
-//     int16_t min_angle;
-//     int16_t max_angle;
-// };
-
-// const int16_t initial_angle = 2047;
-// const uint16_t initial_speed = 3400;
-
-// bool Servo_Torque_State = TORQUE_OFF;
-// bool angle_safety = 0;
-
-// bool walk_mode = false;
-
-// long randNum = 0;
-
-// struct Servo waist = {1, initial_angle, initial_speed, 1024, 3072};
-
-// struct Servo L_shoulder_pitch = {11, initial_angle, initial_speed, 1024,
-// 4095}; struct Servo L_shoulder_roll = {12, initial_angle, initial_speed,
-// 2047, 4095}; struct Servo L_elbow_pitch = {13, initial_angle, initial_speed,
-// 2047, 4000};
-
-// struct Servo R_shoulder_pitch = {21, initial_angle, initial_speed, 0, 3072};
-// struct Servo R_shoulder_roll = {22, initial_angle, initial_speed, 0, 2047};
-// struct Servo R_elbow_pitch = {23, initial_angle, initial_speed, 94, 2047};
-
-// struct Servo R_hip_roll = {31, initial_angle, initial_speed, 1024, 2303};
-// struct Servo R_hip_pitch = {32, initial_angle, initial_speed, 512, 2500};
-// struct Servo R_hip_yaw = {33, initial_angle, initial_speed, 1024, 3072};
-// struct Servo R_knee_pitch = {34, initial_angle, initial_speed, 256, 2186};
-// struct Servo R_ankle_roll = {35, initial_angle, initial_speed, 1024, 3072};
-// struct Servo R_ankle_pitch = {36, initial_angle, initial_speed, 1024, 3072};
-
-// struct Servo L_hip_roll = {41, initial_angle, initial_speed, 1791, 3072};
-// struct Servo L_hip_pitch = {42, initial_angle, initial_speed, 1594, 3582};
-// struct Servo L_hip_yaw = {43, initial_angle, initial_speed, 1024, 3072};
-// struct Servo L_knee_pitch = {44, initial_angle, initial_speed, 1913, 3838};
-// struct Servo L_ankle_roll = {45, initial_angle, initial_speed, 1024, 3072};
-// struct Servo L_ankle_pitch = {46, initial_angle, initial_speed, 1024, 3072};
-
-// uint8_t ID_array[DEGREE_OF_FREEDOM] = {
-//     waist.ID,         L_shoulder_pitch.ID, L_shoulder_roll.ID,
-//     L_elbow_pitch.ID, R_shoulder_pitch.ID, R_shoulder_roll.ID,
-//     R_elbow_pitch.ID, R_hip_roll.ID,       R_hip_pitch.ID,
-//     R_hip_yaw.ID,     R_knee_pitch.ID,     R_ankle_roll.ID,
-//     R_ankle_pitch.ID, L_hip_roll.ID,       L_hip_pitch.ID,
-//     L_hip_yaw.ID,     L_knee_pitch.ID,     L_ankle_roll.ID,
-//     L_ankle_pitch.ID};
-// int16_t Angle_array[DEGREE_OF_FREEDOM] = {};
-// uint16_t Speed_array[DEGREE_OF_FREEDOM] = {};
-// uint8_t ACC_array[DEGREE_OF_FREEDOM] = {};
-
-// char rdata[RDATA_LENGTH];
-
-// bool check_range(uint8_t Servo_ID, int16_t Position);
-// void enable_servo_torque(bool torque_enable);
-// bool angle_array_update(void);
-// void speed_array_update(void);
-// void initial_posture(void);
-// int16_t angle(double rad);
-
-// void walk_ready(void);
-// void walk_straight_motion(void);
-// void walk_finish(void);
-// void shake_R_hands(void);
-// void shake_L_hands(void);
-// void punch(void);
-// void banzai(void);
-// void tukkomi(void);
-
-// void setup() {
-//     Debug_Serial.begin(115200);
-//     Servo_Serial.begin(1000000);
-//     PS4.begin();
-//     STS3215.pSerial = &Servo_Serial;
-
-//     srand(1);
-
-//     for (int i = 0; i < DEGREE_OF_FREEDOM; ++i) {
-//         ACC_array[i] = 50;
-//     }
-//     speed_array_update();
-//     angle_safety = angle_array_update();
-
-//     while (1) {
-//         if (PS4.isConnected()) {
-//             if (PS4.PSButton()) break;
-//         }
-//     }
-
-//     Servo_Torque_State = TORQUE_ON;
-//     enable_servo_torque(Servo_Torque_State);
-
-//     if (angle_safety == 1) {
-//         Debug_Serial.println("Fatal:out of angle range.");
-//         PS4.setLed(255, 0, 0);
-//         PS4.sendToController();
-//         while (1);
-//     } else
-//         STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                Speed_array, ACC_array);
-
-//     delay(3000);
-// }
-
-// void loop() {
-//     if (PS4.isConnected()) {
-//         if (PS4.PSButton()) {  // 緊停処理
-//             Servo_Torque_State = TORQUE_OFF;
-//             enable_servo_torque(Servo_Torque_State);
-//             Debug_Serial.println("Fatal:emergency stop activated.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         }
-//         // ここにどんどん書いてく．
-//         if (PS4.Circle()) {
-//             shake_R_hands();
-//         }
-//         if (PS4.Square()) {
-//             shake_L_hands();
-//         }
-//         if (PS4.Triangle()) {
-//             punch();
-//         }
-//         if (PS4.Cross()) {
-//             banzai();
-//         }
-//         if (PS4.L1()) {
-//             tukkomi();
-//         }
-//         if (PS4.Up()) {
-//             if (walk_mode == false) {
-//                 walk_mode = true;
-//                 walk_ready();
-//             } else {
-//                 walk_straight_motion();
-//             }
-//         } else {
-//             if (walk_mode == true) {
-//                 walk_mode = false;
-//                 walk_finish();
-//             }
-//             initial_posture();
-//         }
-
-//     } else {
-//         initial_posture();
-//         randNum = random(4);
-//         if (randNum == 0) {
-//             shake_L_hands();
-//         } else if (randNum == 1) {
-//             shake_R_hands();
-//         } else if (randNum == 2) {
-//             punch();
-//         } else {
-//             banzai();
-//         }
-//     }
-//     delay(100);
-// }
-
-// bool check_range(uint8_t Servo_ID, int16_t Position) {
-//     if (Servo_ID == waist.ID) {
-//         if (Position < waist.min_angle || Position > waist.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_shoulder_pitch.ID) {
-//         if (Position < L_shoulder_pitch.min_angle ||
-//             Position > L_shoulder_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_shoulder_roll.ID) {
-//         if (Position < L_shoulder_roll.min_angle ||
-//             Position > L_shoulder_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_elbow_pitch.ID) {
-//         if (Position < L_elbow_pitch.min_angle ||
-//             Position > L_elbow_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_shoulder_pitch.ID) {
-//         if (Position < R_shoulder_pitch.min_angle ||
-//             Position > R_shoulder_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_shoulder_roll.ID) {
-//         if (Position < R_shoulder_roll.min_angle ||
-//             Position > R_shoulder_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_elbow_pitch.ID) {
-//         if (Position < R_elbow_pitch.min_angle ||
-//             Position > R_elbow_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_hip_roll.ID) {
-//         if (Position < R_hip_roll.min_angle ||
-//             Position > R_hip_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_hip_pitch.ID) {
-//         if (Position < R_hip_pitch.min_angle ||
-//             Position > R_hip_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_hip_yaw.ID) {
-//         if (Position < R_hip_yaw.min_angle || Position > R_hip_yaw.max_angle)
-//         {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_knee_pitch.ID) {
-//         if (Position < R_knee_pitch.min_angle ||
-//             Position > R_knee_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_ankle_roll.ID) {
-//         if (Position < R_ankle_roll.min_angle ||
-//             Position > R_ankle_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == R_ankle_pitch.ID) {
-//         if (Position < R_ankle_pitch.min_angle ||
-//             Position > R_ankle_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_hip_roll.ID) {
-//         if (Position < L_hip_roll.min_angle ||
-//             Position > L_hip_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_hip_pitch.ID) {
-//         if (Position < L_hip_pitch.min_angle ||
-//             Position > L_hip_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_hip_yaw.ID) {
-//         if (Position < L_hip_yaw.min_angle || Position > L_hip_yaw.max_angle)
-//         {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_knee_pitch.ID) {
-//         if (Position < L_knee_pitch.min_angle ||
-//             Position > L_knee_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_ankle_roll.ID) {
-//         if (Position < L_ankle_roll.min_angle ||
-//             Position > L_ankle_roll.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     } else if (Servo_ID == L_ankle_pitch.ID) {
-//         if (Position < L_ankle_pitch.min_angle ||
-//             Position > L_ankle_pitch.max_angle) {
-//             return 1;
-//         } else {
-//             return 0;
-//         }
-//     }
-// }
-
-// void enable_servo_torque(bool torque_enable) {
-//     for (int i = 0; i < DEGREE_OF_FREEDOM; ++i) {
-//         STS3215.EnableTorque(ID_array[i], torque_enable);
-//     }
-// }
-
-// bool angle_array_update(void) {
-//     Angle_array[0] = waist.angle;
-//     if (check_range(ID_array[0], Angle_array[0]) == 1) return 1;
-//     Angle_array[1] = L_shoulder_pitch.angle;
-//     if (check_range(ID_array[1], Angle_array[1]) == 1) return 1;
-//     Angle_array[2] = L_shoulder_roll.angle;
-//     if (check_range(ID_array[2], Angle_array[2]) == 1) return 1;
-//     Angle_array[3] = L_elbow_pitch.angle;
-//     if (check_range(ID_array[3], Angle_array[3]) == 1) return 1;
-//     Angle_array[4] = R_shoulder_pitch.angle;
-//     if (check_range(ID_array[4], Angle_array[4]) == 1) return 1;
-//     Angle_array[5] = R_shoulder_roll.angle;
-//     if (check_range(ID_array[5], Angle_array[5]) == 1) return 1;
-//     Angle_array[6] = R_elbow_pitch.angle;
-//     if (check_range(ID_array[6], Angle_array[6]) == 1) return 1;
-//     Angle_array[7] = R_hip_roll.angle;
-//     if (check_range(ID_array[7], Angle_array[7]) == 1) return 1;
-//     Angle_array[8] = R_hip_pitch.angle;
-//     if (check_range(ID_array[8], Angle_array[8]) == 1) return 1;
-//     Angle_array[9] = R_hip_yaw.angle;
-//     if (check_range(ID_array[9], Angle_array[9]) == 1) return 1;
-//     Angle_array[10] = R_knee_pitch.angle;
-//     if (check_range(ID_array[10], Angle_array[10]) == 1) return 1;
-//     Angle_array[11] = R_ankle_roll.angle;
-//     if (check_range(ID_array[11], Angle_array[11]) == 1) return 1;
-//     Angle_array[12] = R_ankle_pitch.angle;
-//     if (check_range(ID_array[12], Angle_array[12]) == 1) return 1;
-//     Angle_array[13] = L_hip_roll.angle;
-//     if (check_range(ID_array[13], Angle_array[13]) == 1) return 1;
-//     Angle_array[14] = L_hip_pitch.angle;
-//     if (check_range(ID_array[14], Angle_array[14]) == 1) return 1;
-//     Angle_array[15] = L_hip_yaw.angle;
-//     if (check_range(ID_array[15], Angle_array[15]) == 1) return 1;
-//     Angle_array[16] = L_knee_pitch.angle;
-//     if (check_range(ID_array[16], Angle_array[16]) == 1) return 1;
-//     Angle_array[17] = L_ankle_roll.angle;
-//     if (check_range(ID_array[17], Angle_array[17]) == 1) return 1;
-//     Angle_array[18] = L_ankle_pitch.angle;
-//     if (check_range(ID_array[18], Angle_array[18]) == 1) return 1;
-//     return 0;
-// }
-
-// void speed_array_update(void) {
-//     Speed_array[0] = waist.speed;
-//     Speed_array[1] = L_shoulder_pitch.speed;
-//     Speed_array[2] = L_shoulder_roll.speed;
-//     Speed_array[3] = L_elbow_pitch.speed;
-//     Speed_array[4] = R_shoulder_pitch.speed;
-//     Speed_array[5] = R_shoulder_roll.speed;
-//     Speed_array[6] = R_elbow_pitch.speed;
-//     Speed_array[7] = R_hip_roll.speed;
-//     Speed_array[8] = R_hip_pitch.speed;
-//     Speed_array[9] = R_hip_yaw.speed;
-//     Speed_array[10] = R_knee_pitch.speed;
-//     Speed_array[11] = R_ankle_roll.speed;
-//     Speed_array[12] = R_ankle_pitch.speed;
-//     Speed_array[13] = L_hip_roll.speed;
-//     Speed_array[14] = L_hip_pitch.speed;
-//     Speed_array[15] = L_hip_yaw.speed;
-//     Speed_array[16] = L_knee_pitch.speed;
-//     Speed_array[17] = L_ankle_roll.speed;
-//     Speed_array[18] = L_ankle_pitch.speed;
-// }
-
-// void initial_posture(void) {
-//     waist.angle = initial_angle;
-
-//     L_shoulder_pitch.angle = initial_angle;
-//     L_shoulder_roll.angle = initial_angle;
-//     L_elbow_pitch.angle = initial_angle;
-
-//     R_shoulder_pitch.angle = initial_angle;
-//     R_shoulder_roll.angle = initial_angle;
-//     R_elbow_pitch.angle = initial_angle;
-
-//     R_hip_roll.angle = initial_angle;
-//     R_hip_pitch.angle = initial_angle;
-//     R_hip_yaw.angle = initial_angle;
-//     R_knee_pitch.angle = initial_angle;
-//     R_ankle_roll.angle = initial_angle;
-//     R_ankle_pitch.angle = initial_angle;
-
-//     L_hip_roll.angle = initial_angle;
-//     L_hip_pitch.angle = initial_angle;
-//     L_hip_yaw.angle = initial_angle;
-//     L_knee_pitch.angle = initial_angle;
-//     L_ankle_roll.angle = initial_angle;
-//     L_ankle_pitch.angle = initial_angle;
-
-//     angle_safety = angle_array_update();
-//     if (angle_safety == 1) {
-//         Debug_Serial.println("Fatal:out of angle range.");
-//         PS4.setLed(255, 0, 0);
-//         PS4.sendToController();
-//         while (1);
-//     } else
-//         STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                Speed_array, ACC_array);
-//     delay(500);
-// }
-
-// int16_t angle(double rad) { return 4095 * rad / (2 * PI); }
-
-// void walk_ready(void) {
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_pitch.angle = 2047 - 16 * i;
-//         R_knee_pitch.angle = 2047 - 32 * i;
-//         R_ankle_pitch.angle = 2047 - 16 * i;
-
-//         L_hip_pitch.angle = 2047 + 16 * i;
-//         L_knee_pitch.angle = 2047 + 32 * i;
-//         L_ankle_pitch.angle = 2047 + 16 * i;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void walk_straight_motion(void) {
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_roll.angle -= 10;
-//         R_ankle_roll.angle -= 10;
-
-//         L_hip_roll.angle -= 10;
-//         L_ankle_roll.angle -= 10;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_pitch.angle -= 8;
-//         R_knee_pitch.angle -= 16;
-//         R_ankle_pitch.angle -= 8;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_pitch.angle -= 16;
-//         R_ankle_pitch.angle += 16;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_pitch.angle += 24;
-//         R_knee_pitch.angle += 48;
-//         R_ankle_pitch.angle += 24;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 33; ++i) {
-//         R_hip_roll.angle += 10;
-//         R_knee_pitch.angle -= 16;
-//         R_ankle_roll.angle += 10;
-//         R_ankle_pitch.angle -= 16;
-
-//         L_hip_roll.angle += 10;
-//         L_hip_pitch.angle -= 16;
-//         L_knee_pitch.angle -= 16;
-//         L_ankle_roll.angle += 10;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 16; ++i) {
-//         L_knee_pitch.angle += 48;
-//         L_ankle_pitch.angle += 48;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 16; ++i) {
-//         L_hip_pitch.angle += 40;
-//         L_ankle_pitch.angle -= 40;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 16; ++i) {
-//         L_hip_pitch.angle -= 8;
-//         L_knee_pitch.angle -= 16;
-//         L_ankle_pitch.angle -= 8;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 16; ++i) {
-//         R_hip_roll.angle -= 10;
-//         R_ankle_roll.angle -= 10;
-
-//         L_hip_roll.angle -= 10;
-//         L_ankle_roll.angle -= 10;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-// }
-
-// void walk_finish(void) {
-//     for (int i = 1; i < 17; ++i) {
-//         R_hip_pitch.angle = 1791 + 16 * i;
-//         R_knee_pitch.angle = 1535 + 32 * i;
-//         R_ankle_pitch.angle = 1791 + 16 * i;
-
-//         L_hip_pitch.angle = 2303 - 16 * i;
-//         L_knee_pitch.angle = 2559 - 32 * i;
-//         L_ankle_pitch.angle = 2303 - 16 * i;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void shake_R_hands(void) {
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle -= 63;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle -= 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle -= 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle -= 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(100);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 63;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void shake_L_hands(void) {
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle += 32;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 17; ++i) {
-//         L_elbow_pitch.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle -= 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle -= 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle += 16;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     for (int i = 1; i < 33; ++i) {
-//         L_elbow_pitch.angle -= 40;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void punch(void) {
-//     for (int i = 1; i < 33; ++i) {
-//         R_elbow_pitch.angle -= 32;
-//         L_elbow_pitch.angle += 32;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 17; ++i) {
-//         waist.angle -= 32;
-//         R_shoulder_pitch.angle -= 64;
-//         R_shoulder_roll.angle -= 32;
-//         R_elbow_pitch.angle += 32;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(2000);
-//     for (int i = 1; i < 17; ++i) {
-//         waist.angle += 64;
-//         R_shoulder_pitch.angle += 64;
-//         R_shoulder_roll.angle += 32;
-//         R_elbow_pitch.angle -= 32;
-
-//         L_shoulder_pitch.angle += 64;
-//         L_shoulder_roll.angle += 32;
-//         L_elbow_pitch.angle -= 32;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(2000);
-//     for (int i = 1; i < 32; ++i) {
-//         waist.angle -= 16;
-
-//         R_elbow_pitch.angle += 16;
-
-//         L_shoulder_pitch.angle -= 32;
-//         L_shoulder_roll.angle -= 16;
-
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void banzai(void) {
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle -= 63;
-//         L_shoulder_roll.angle += 63;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(2000);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 32;
-//         R_shoulder_pitch.angle -= 32;
-//         R_elbow_pitch.angle -= 32;
-//         L_shoulder_roll.angle -= 32;
-//         L_shoulder_pitch.angle += 32;
-//         L_elbow_pitch.angle += 32;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(3000);
-//     for (int i = 1; i < 33; ++i) {
-//         R_shoulder_roll.angle += 31;
-//         R_shoulder_pitch.angle += 32;
-//         R_elbow_pitch.angle += 32;
-
-//         L_shoulder_roll.angle -= 31;
-//         L_shoulder_pitch.angle -= 32;
-//         L_elbow_pitch.angle -= 32;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
-
-// void tukkomi(void) {
-//     for (int i = 1; i < 33; ++i) {
-//         L_shoulder_roll.angle += 32;
-//         L_elbow_pitch.angle += 61;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 9; ++i) {
-//         L_elbow_pitch.angle -= 244;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(200);
-//     for (int i = 1; i < 9; ++i) {
-//         L_elbow_pitch.angle += 244;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-//     delay(1000);
-//     for (int i = 1; i < 33; ++i) {
-//         L_shoulder_roll.angle -= 32;
-//         L_elbow_pitch.angle -= 61;
-//         angle_safety = angle_array_update();
-//         if (angle_safety == 1) {
-//             Debug_Serial.println("Fatal:out of angle range.");
-//             PS4.setLed(255, 0, 0);
-//             PS4.sendToController();
-//             while (1);
-//         } else
-//             STS3215.SyncWritePosEx(ID_array, DEGREE_OF_FREEDOM, Angle_array,
-//                                    Speed_array, ACC_array);
-//         delay(50);
-//     }
-// }
+void BaseNoid_Process(ControllerPtr ctl) {
+    using namespace ABC;
+    using namespace BaseNoid;
+
+    if (ctl->miscButtons() & MISC_BUTTON_SYSTEM) {
+        if (BaseNoid_Torque_Flagment == TORQUE_ON) {
+            BaseNoid_Torque_Flagment = TORQUE_OFF;  // Disable torque
+            Walk_Command_x = 0;
+            Walk_Command_turn = 0;
+            Now_Walking_Flagment = false;
+            apply_servo_gain(false);  // Gains for non-walking mode
+            Debug_Serial.println(
+                "[INFO]:PS Button pressed, turned off torque on BaseNoid.");
+            enable_servo_torque(
+                BaseNoid_Torque_Flagment);      // Disable servo torque
+            PW_Switch_LED(false, false, true);  // Blue LED on
+            delay(1000);  // Wait for 1 second before resetting
+        } else {
+            BaseNoid_Torque_Flagment = TORQUE_ON;  // Enable torque
+            Debug_Serial.println(
+                "[INFO]:PS Button pressed, turned on torque on BaseNoid.");
+            enable_servo_torque(
+                BaseNoid_Torque_Flagment);      // Disable servo torque
+            PW_Switch_LED(false, true, false);  // Green LED on
+            set_initial_position(0.2);
+            delay(1000);  // Wait for 1 second before resetting
+        }
+    }
+
+    if (BaseNoid_Torque_Flagment == TORQUE_OFF &&
+        ctl->miscButtons() & MISC_BUTTON_START) {
+        Configuration_Mode();  // Set BaseNoid to setting mode
+    }
+
+    if (Leg_flexed_state == true) {
+        // Left stick up : forward, down : backward
+        Walk_Command_x = (abs(ctl->axisY()) > 64) ? -ctl->axisY() : 0;
+        // Left stick left : turn left, right : turn right
+        Walk_Command_turn = (abs(ctl->axisX()) > 64) ? -ctl->axisX() : 0;
+    } else {
+        Walk_Command_x = 0;
+        Walk_Command_turn = 0;
+    }
+    if (Now_Walking_Flagment == true) {
+        return;  // Ignore other buttons while walking
+    }
+
+    // Press Circle and basenoid get ready for walking
+    if (ctl->buttons() & BUTTON_B) {
+        if (Leg_flexed_state == false) {
+            Leg_flexed_state = true;
+            Get_Ready_to_Walk();
+            delay(1000);  // Wait for 1 second before starting to walk
+        } else {
+            Leg_flexed_state = false;
+            set_initial_position(0.2);
+            delay(1000);  // Wait for 1 second before stopping
+        }
+    }
+
+    if (Leg_flexed_state == true) {
+        if (ctl->dpad() & DPAD_DOWN) {
+            Debug_Serial.println("[INFO]:Down button pressed.");
+            // If Down button is pressed, perform a sit down action
+            BaseNoid_Sample_Motion::sit_down();
+        }
+        if (ctl->dpad() & DPAD_UP) {
+            Debug_Serial.println("[INFO]:Up button pressed.");
+            // If Up button is pressed, perform a wake up action
+            BaseNoid_Sample_Motion::stand_up();
+        }
+        if (ctl->buttons() & BUTTON_A) {
+            Debug_Serial.println("[INFO]:Cross button pressed.");
+            // If Cross button is pressed, measure the servo delay
+            Measure_Control_Delay();
+        }
+    }
+
+    // Upper body motions (available in any leg posture)
+    // A motion starts only at the moment the button is pressed, so a button
+    // that stays pressed (held down, or a worn trigger) does not repeat it.
+    // L2 / R2 : the analog value (0 - 1023) is used, because the digital
+    // flag turns on even when the trigger is only slightly pressed.
+    const int32_t Trigger_Threshold = 512;
+    enum {
+        MOTION_PUNCH = 1 << 0,
+        MOTION_R1 = 1 << 1,
+        MOTION_L1 = 1 << 2,
+        MOTION_R2 = 1 << 3,
+        MOTION_L2 = 1 << 4,
+    };
+
+    uint8_t motion_buttons = 0;
+    if (ctl->buttons() & BUTTON_Y) motion_buttons |= MOTION_PUNCH;
+    if (ctl->r1()) motion_buttons |= MOTION_R1;
+    if (ctl->l1()) motion_buttons |= MOTION_L1;
+    // D-pad left / right : substitutes for L1 / L2 (for a controller whose
+    // L1 / L2 do not work, e.g. L2 analog value stuck at 1020)
+    if (ctl->dpad() & DPAD_LEFT) motion_buttons |= MOTION_L1;
+    if (ctl->dpad() & DPAD_RIGHT) motion_buttons |= MOTION_L2;
+    if (ctl->throttle() > Trigger_Threshold) motion_buttons |= MOTION_R2;
+    if (ctl->brake() > Trigger_Threshold) motion_buttons |= MOTION_L2;
+    // 0xFF : buttons already pressed at startup are ignored until released
+    static uint8_t last_motion_buttons = 0xFF;
+    const uint8_t pressed_now = motion_buttons & ~last_motion_buttons;
+    last_motion_buttons = motion_buttons;
+
+    if (BaseNoid_Torque_Flagment == TORQUE_ON) {
+        if (pressed_now & MOTION_PUNCH) {
+            Debug_Serial.println("[INFO]:Triangle button pressed.");
+            // If Triangle button is pressed, perform a punch action
+            BaseNoid_Sample_Motion::punch();
+        } else if (pressed_now & MOTION_R1) {
+            Debug_Serial.println("[INFO]:R1 button pressed.");
+            BaseNoid_Sample_Motion::shake_R_hands();
+        } else if (pressed_now & MOTION_L1) {
+            Debug_Serial.println("[INFO]:L1 (or D-pad left) pressed.");
+            BaseNoid_Sample_Motion::shake_L_hands();
+        } else if (pressed_now & MOTION_R2) {
+            Debug_Serial.printf("[INFO]:R2 button pressed. (%d)\n",
+                                (int)ctl->throttle());
+            BaseNoid_Sample_Motion::banzai();
+        } else if (pressed_now & MOTION_L2) {
+            Debug_Serial.printf("[INFO]:L2 (or D-pad right) pressed. (%d)\n",
+                                (int)ctl->brake());
+            BaseNoid_Sample_Motion::tukkomi();
+        }
+    }
+}
